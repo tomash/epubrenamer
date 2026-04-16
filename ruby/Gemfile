@@ -1,0 +1,9 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gem "rubyzip", "~> 2.3"
+gem "rexml"
+
+# not used but want to check the source
+gem 'calibre-ruby', '~> 0.0.2'
