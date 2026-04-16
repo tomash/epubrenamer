@@ -6,17 +6,26 @@ require "optparse"
 require "rexml/document"
 require "zip"
 
+require_relative "ascii_tic"
+String.include AsciiTic
+
 def usage
   warn "Usage: #{$PROGRAM_NAME} [--interactive-rename] <ebook-directory>"
   exit 1
 end
 
-def rename_confirmed?(target_basename)
-  STDERR.print "Rename to #{target_basename}? [y/n] "
+# Returns :yes, :no, :all (yes + rename all subsequent without asking), or :quit
+def read_rename_decision(target_basename)
+  STDERR.print "Rename to #{target_basename}? [y/n/a/q] "
   line = STDIN.gets
-  return false if line.nil?
+  return :no if line.nil?
 
-  line.strip.downcase.start_with?("y")
+  case line.strip.downcase
+  when "y", "yes" then :yes
+  when "a", "all" then :all
+  when "q", "quit" then :quit
+  else :no
+  end
 end
 
 def epub_rootfile_path(zip)
@@ -42,14 +51,23 @@ end
 # plus [] for glob/shell safety; controls/C1; emojis (Extended_Pictographic) and stray VS/ZWJ.
 # Spaces (U+0020) are kept; other whitespace is removed via the control-char rule where applicable.
 UNSAFE_TITLE_CHARS =
-  /[\x00-\x1f\x7f\u0080-\u009F]|[#%&{}\[\]\\<>*?\/$!'":@+`|=]/u.freeze
+  /[\x00-\x1f\x7f\u0080-\u009F]|[#%&{}\[\]\\<>*?\/$!'":@+`|=\u2019\u201C\u201D\u201E]/u.freeze
 
 def safe_title(title)
-  s = title.to_s
+  s = title.to_s.to_ascii_brutal
   s = s.gsub(/\p{Extended_Pictographic}/u, "")
   s = s.gsub(/\uFE0F|\u200D/u, "")
   s = s.gsub(UNSAFE_TITLE_CHARS, "")
   s.gsub(/\s+/, " ").strip
+end
+
+# ISO-8859-1 spans U+0000–U+00FF. True when over half of codepoints are above that range (e.g. Cyrillic).
+def title_mostly_outside_latin1?(title)
+  s = title.to_s
+  return false if s.empty?
+
+  outside = s.each_char.count { |c| c.ord > 0xFF }
+  (outside.to_f / s.length) > 0.5
 end
 
 def texts_for_local_name(doc, local)
@@ -87,12 +105,15 @@ rescue StandardError => e
 end
 
 def expected_basenames(author, raw_title)
+  sa = safe_title(author)
+  return [nil, "author empty after sanitizing"] if sa.empty?
+
   st = safe_title(raw_title)
   return [nil, "title empty after sanitizing"] if st.empty?
 
   variants = [
-    "#{author} - #{st}.epub",
-    "#{st} - #{author}.epub"
+    "#{sa} - #{st}.epub",
+    "#{st} - #{sa}.epub"
   ]
   [variants, nil]
 end
@@ -107,7 +128,7 @@ def main
   interactive_rename = false
   OptionParser.new do |opts|
     opts.banner = "Usage: #{$PROGRAM_NAME} [options] <ebook-directory>"
-    opts.on("--interactive-rename", "Prompt y/n before each rename to the primary suggested name") do
+    opts.on("--interactive-rename", "Prompt before each rename: y=yes, n=no, a=yes to all, q=quit") do
       interactive_rename = true
     end
   end.parse!
@@ -120,6 +141,7 @@ def main
     exit 1
   end
 
+  rename_all = false
   Find.find(root) do |path|
     next unless File.file?(path)
     next unless File.extname(path).casecmp?(".epub")
@@ -130,6 +152,11 @@ def main
 
     if err
       puts %(is: #{basename}, should be: [error: #{err}])
+      next
+    end
+
+    if title_mostly_outside_latin1?(title)
+      puts %(#{basename} OK (rename skipped: title mostly outside Latin-1))
       next
     end
 
@@ -154,10 +181,19 @@ def main
         next
       end
 
-      if rename_confirmed?(target)
-        File.rename(path, dest)
-        warn %(Renamed: #{basename} -> #{target})
+      unless rename_all
+        case read_rename_decision(target)
+        when :quit
+          exit 0
+        when :all
+          rename_all = true
+        when :no
+          next
+        end
       end
+
+      File.rename(path, dest)
+      warn %(Renamed: #{basename} -> #{target})
     end
   end
 end
