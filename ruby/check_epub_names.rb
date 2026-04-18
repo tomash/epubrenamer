@@ -7,10 +7,12 @@ require "rexml/document"
 require "zip"
 
 require_relative "ascii_tic"
+require_relative "mobi_metadata"
 String.include AsciiTic
 
 def usage
   warn "Usage: #{$PROGRAM_NAME} [--interactive-rename] <ebook-directory>"
+  warn "Checks .epub and .mobi files (same naming rules)."
   exit 1
 end
 
@@ -104,16 +106,17 @@ rescue StandardError => e
   [nil, nil, e.message]
 end
 
-def expected_basenames(author, raw_title)
+def expected_basenames(author, raw_title, ext)
   sa = safe_title(author)
   return [nil, "author empty after sanitizing"] if sa.empty?
 
   st = safe_title(raw_title)
   return [nil, "title empty after sanitizing"] if st.empty?
 
+  suffix = ext.downcase
   variants = [
-    "#{sa} - #{st}.epub",
-    "#{st} - #{sa}.epub"
+    "#{sa} - #{st}#{suffix}",
+    "#{st} - #{sa}#{suffix}"
   ]
   [variants, nil]
 end
@@ -144,11 +147,17 @@ def main
   rename_all = false
   Find.find(root) do |path|
     next unless File.file?(path)
-    next unless File.extname(path).casecmp?(".epub")
+    ext = File.extname(path)
+    next unless [".epub", ".mobi"].any? { |e| ext.casecmp?(e) }
     next if under_calibre_directory?(path)
 
     basename = File.basename(path)
-    author, title, err = extract_author_title(path)
+    author, title, err =
+      if ext.casecmp?(".epub")
+        extract_author_title(path)
+      else
+        MobiMetadata.extract_author_title(path)
+      end
 
     if err
       puts %(is: #{basename}, should be: [error: #{err}])
@@ -160,7 +169,7 @@ def main
       next
     end
 
-    expected, tmpl_err = expected_basenames(author, title)
+    expected, tmpl_err = expected_basenames(author, title, ext)
     if tmpl_err
       puts %(is: #{basename}, should be: [error: #{tmpl_err}])
       next
